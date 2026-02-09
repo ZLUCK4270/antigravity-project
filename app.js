@@ -1,4 +1,5 @@
 // Referencias a elementos del DOM
+// Última actualización: 2026-02-08
 const authSection = document.getElementById('auth-section');
 const dashboardSection = document.getElementById('dashboard-section');
 
