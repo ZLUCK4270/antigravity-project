@@ -305,7 +305,7 @@ btnStart.addEventListener('click', async () => {
         startTimer();
     } catch (err) {
         console.error('Error iniciar jornada:', err);
-        showDashboardMessage('No se pudo iniciar el turno', 'error');
+        showDashboardMessage('Error: ' + (err.message || 'No se pudo iniciar el turno'), 'error');
     }
 });
 
@@ -347,7 +347,7 @@ btnPause.addEventListener('click', async () => {
         updateTimerDisplay(); // Se actualizará una última vez y quedará "congelado" visualmente
     } catch (err) {
         console.error('Error pausar:', err);
-        showDashboardMessage('Error al iniciar el break', 'error');
+        showDashboardMessage('Error: ' + (err.message || 'Error al iniciar el break'), 'error');
     }
 });
 
@@ -387,7 +387,7 @@ btnResume.addEventListener('click', async () => {
         startTimer();
     } catch (err) {
         console.error('Error reanudar:', err);
-        showDashboardMessage('Error al reanudar el turno', 'error');
+        showDashboardMessage('Error: ' + (err.message || 'Error al reanudar el turno'), 'error');
     }
 });
 
@@ -421,7 +421,7 @@ btnEnd.addEventListener('click', async () => {
         loadHistory();
     } catch (err) {
         console.error('Error finalizar:', err);
-        showDashboardMessage('Error al finalizar el turno', 'error');
+        showDashboardMessage('Error: ' + (err.message || 'Error al finalizar el turno'), 'error');
     }
 });
 
@@ -434,6 +434,18 @@ function showDashboardMessage(msg, type = 'info') {
     setTimeout(() => {
         dashboardMessage.textContent = '';
     }, 3000);
+}
+
+function msToHms(duration) {
+    const seconds = Math.floor((duration / 1000) % 60);
+    const minutes = Math.floor((duration / (1000 * 60)) % 60);
+    const hours = Math.floor((duration / (1000 * 60 * 60)));
+
+    return { h: hours, m: minutes, s: seconds };
+}
+
+function pad(num) {
+    return num.toString().padStart(2, '0');
 }
 
 // ─── Historial ───────────────────────────────────────────────────────────────
