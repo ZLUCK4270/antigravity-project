@@ -1,38 +1,35 @@
 // Referencias a elementos del DOM
-// Última actualización: 2026-02-08
-const authSection = document.getElementById('auth-section');
+const authSection     = document.getElementById('auth-section');
 const dashboardSection = document.getElementById('dashboard-section');
+const loginForm       = document.getElementById('login-form');
+const registerForm    = document.getElementById('register-form');
+const btnToggleAuth   = document.getElementById('btn-toggle-auth');
+const btnToggleLogin  = document.getElementById('btn-toggle-login');
+const authMessage     = document.getElementById('auth-message');
 
-const loginForm = document.getElementById('login-form');
-const registerForm = document.getElementById('register-form');
-const btnToggleAuth = document.getElementById('btn-toggle-auth');
-const btnToggleLogin = document.getElementById('btn-toggle-login');
-const authMessage = document.getElementById('auth-message');
+const userDisplay     = document.getElementById('user-display');
+const btnLogout       = document.getElementById('btn-logout');
 
-const userDisplay = document.getElementById('user-display');
-const btnLogout = document.getElementById('btn-logout');
+const timerDisplay    = document.getElementById('timer-display');
+const statusBadge     = document.getElementById('status-badge');
+const btnStart        = document.getElementById('btn-start');
+const btnPause        = document.getElementById('btn-pause');
+const btnResume       = document.getElementById('btn-resume');
+const btnEnd          = document.getElementById('btn-end');
 
-const timerDisplay = document.getElementById('timer-display');
-const statusBadge = document.getElementById('status-badge');
-const btnStart = document.getElementById('btn-start');
-const btnPause = document.getElementById('btn-pause');
-const btnResume = document.getElementById('btn-resume');
-const btnEnd = document.getElementById('btn-end');
+const historyList     = document.getElementById('history-list');
 
-const historyList = document.getElementById('history-list');
+// Estado global
+let currentUser      = null;
+let currentSession   = null;
+let timerInterval    = null;
+let workedMsOnPause  = 0;   // tiempo trabajado acumulado antes de la pausa actual
 
-// Estado local
-let currentUser = null;
-let currentSession = null;
-let timerInterval = null;
-
-// --- Inicialización ---
+// ─── Inicialización ──────────────────────────────────────────────────────────
 async function init() {
-    // Verificar sesión al cargar
     const { data: { session } } = await sb.auth.getSession();
     handleSession(session);
 
-    // Escuchar cambios de autenticación
     sb.auth.onAuthStateChange((_event, session) => {
         handleSession(session);
     });
@@ -51,7 +48,7 @@ function handleSession(session) {
     }
 }
 
-// --- UI Switching ---
+// ─── Cambio de pantallas ─────────────────────────────────────────────────────
 function showAuth() {
     authSection.classList.remove('hidden');
     authSection.classList.add('active');
@@ -66,7 +63,7 @@ function showDashboard() {
     dashboardSection.classList.add('active');
 }
 
-// --- Autenticación ---
+// ─── Autenticación ───────────────────────────────────────────────────────────
 btnToggleAuth.addEventListener('click', () => {
     loginForm.classList.add('hidden');
     registerForm.classList.remove('hidden');
@@ -81,33 +78,43 @@ btnToggleLogin.addEventListener('click', () => {
 
 loginForm.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const email = document.getElementById('email').value;
+    const email = document.getElementById('email').value.trim();
     const password = document.getElementById('password').value;
-    
+
+    authMessage.textContent = 'Iniciando sesión...';
+    authMessage.style.color = 'var(--text-secondary)';
+
     try {
         const { error } = await sb.auth.signInWithPassword({ email, password });
         if (error) throw error;
-    } catch (error) {
-        authMessage.textContent = `Error: ${error.message}`;
+        authMessage.textContent = '';
+    } catch (err) {
+        authMessage.textContent = err.message || 'Error al iniciar sesión';
         authMessage.style.color = 'var(--danger)';
+        console.error('Error login:', err);
     }
 });
 
 registerForm.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const email = document.getElementById('reg-email').value;
+    const email = document.getElementById('reg-email').value.trim();
     const password = document.getElementById('reg-password').value;
+
+    authMessage.textContent = 'Creando cuenta...';
+    authMessage.style.color = 'var(--text-secondary)';
 
     try {
         const { error } = await sb.auth.signUp({ email, password });
         if (error) throw error;
-        authMessage.textContent = 'Registro exitoso. Inicia sesión.';
+
+        authMessage.textContent = '¡Registro exitoso! Ahora inicia sesión.';
         authMessage.style.color = 'var(--success)';
         registerForm.classList.add('hidden');
         loginForm.classList.remove('hidden');
-    } catch (error) {
-        authMessage.textContent = `Error: ${error.message}`;
+    } catch (err) {
+        authMessage.textContent = err.message || 'Error en el registro';
         authMessage.style.color = 'var(--danger)';
+        console.error('Error registro:', err);
     }
 });
 
@@ -115,37 +122,53 @@ btnLogout.addEventListener('click', async () => {
     await sb.auth.signOut();
 });
 
-// --- Lógica de Control de Tiempo ---
-
+// ─── Carga estado actual ─────────────────────────────────────────────────────
 async function loadCurrentState() {
-    // Buscar si hay una jornada activa (sin fecha de fin)
-    const { data: configData, error } = await supabase
+    if (!currentUser) return;
+
+    const { data, error } = await sb
         .from('jornadas')
         .select('*')
         .eq('usuario_id', currentUser.id)
         .is('fin', null)
-        .single();
-    
-    if (configData) {
-        currentSession = configData;
-        // Check si hay pausa activa
-        if (currentSession.estado === 'pausada') {
-             // Ya tenemos los datos en currentSession (break_inicio, break_fin)
-             // No necesitamos consultar tabla pausas para el estado actual
+        .maybeSingle();
+
+    if (error) {
+        console.error('Error al cargar jornada activa:', error.message);
+        return;
+    }
+
+    if (data) {
+        currentSession = data;
+        const now = new Date();
+
+        if (data.estado === 'activa') {
+            let ms = now - new Date(data.inicio);
+            if (data.break_inicio && data.break_fin) {
+                ms -= (new Date(data.break_fin) - new Date(data.break_inicio));
+            }
+            workedMsOnPause = ms;
+            startTimer();
+        } else if (data.estado === 'pausada') {
+            let ms = new Date(data.break_inicio) - new Date(data.inicio);
+            if (data.break_fin) {
+                ms += (new Date(data.break_fin) - new Date(data.break_inicio));
+            }
+            workedMsOnPause = ms;
+            updateTimerDisplay();
         }
+
         updateControls();
-        startTimer();
     } else {
         currentSession = null;
-        currentBreak = null;
-        updateControls();
+        workedMsOnPause = 0;
         stopTimer();
         timerDisplay.textContent = '00:00:00';
+        updateControls();
     }
 }
 
 function updateControls() {
-    // Reset buttons
     btnStart.classList.add('hidden');
     btnPause.classList.add('hidden');
     btnResume.classList.add('hidden');
@@ -155,171 +178,188 @@ function updateControls() {
         btnStart.classList.remove('hidden');
         statusBadge.textContent = 'Inactivo';
         statusBadge.style.color = 'var(--text-secondary)';
-    } else {
-        btnEnd.classList.remove('hidden');
-        
-        if (currentSession.estado === 'activa') {
-            btnPause.classList.remove('hidden');
-            statusBadge.textContent = 'Trabajando';
-            statusBadge.style.color = 'var(--success)';
-        } else if (currentSession.estado === 'pausada') {
-            btnResume.classList.remove('hidden');
-            statusBadge.textContent = 'En Pausa';
-            statusBadge.style.color = 'var(--warning)';
-        }
+        return;
+    }
+
+    btnEnd.classList.remove('hidden');
+
+    if (currentSession.estado === 'activa') {
+        btnPause.classList.remove('hidden');
+        statusBadge.textContent = 'Trabajando';
+        statusBadge.style.color = 'var(--success)';
+    } else if (currentSession.estado === 'pausada') {
+        btnResume.classList.remove('hidden');
+        statusBadge.textContent = 'En Pausa';
+        statusBadge.style.color = 'var(--warning)';
     }
 }
 
-// --- Timer ---
+// ─── Temporizador ────────────────────────────────────────────────────────────
 function startTimer() {
-    if (timerInterval) clearInterval(timerInterval);
-    
-    timerInterval = setInterval(() => {
-        if (!currentSession) return;
-        
-        let now = new Date();
-        let startTime = new Date(currentSession.inicio);
-        let diff = now - startTime;
-
-        // Si está pausado, no sumamos tiempo PERO para MVP simple mostramos tiempo corrido o estático
-        // Mejora: Calcular tiempo real descontando pausas anteriores.
-        // Para este MVP simple: Mostraremos tiempo transcurrido desde inicio vs ahora.
-        // Si está en pausa, podríamos detener el contador visual.
-        
-        if (currentSession.estado === 'pausada' && currentBreak) {
-            // Mostrar tiempo hasta el inicio de la pausa
-            // diff = new Date(currentBreak.inicio) - startTime; 
-            // Esto es complejo si hay múltiples pausas. 
-            // Simplemente mostraremos "Pausado" en el timer o el tiempo detenido al momento de pausar.
-        }
-
-        const hours = Math.floor(diff / 3600000);
-        const minutes = Math.floor((diff % 3600000) / 60000);
-        const seconds = Math.floor((diff % 60000) / 1000);
-
-        timerDisplay.textContent = 
-            `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
-    }, 1000);
+    stopTimer();
+    timerInterval = setInterval(updateTimerDisplay, 1000);
+    updateTimerDisplay(); // actualización inmediata
 }
 
 function stopTimer() {
-    if (timerInterval) clearInterval(timerInterval);
+    if (timerInterval) {
+        clearInterval(timerInterval);
+        timerInterval = null;
+    }
 }
 
-function pad(num) {
-    return num.toString().padStart(2, '0');
+function updateTimerDisplay() {
+    if (!currentSession) {
+        timerDisplay.textContent = '00:00:00';
+        return;
+    }
+
+    const now = new Date();
+    let ms = workedMsOnPause;
+
+    if (currentSession.estado === 'activa') {
+        if (currentSession.break_inicio && !currentSession.break_fin) {
+            // pausa en curso → no contamos más
+        } else {
+            const lastStart = currentSession.break_fin || currentSession.inicio;
+            ms += now - new Date(lastStart);
+        }
+    }
+    // si está pausado → mostramos el valor congelado
+
+    const { h, m, s } = msToHms(ms);
+    timerDisplay.textContent = `${pad(h)}:${pad(m)}:${pad(s)}`;
 }
 
-// --- Actions ---
+function msToHms(ms) {
+    const totalSec = Math.floor(ms / 1000);
+    return {
+        h: Math.floor(totalSec / 3600),
+        m: Math.floor((totalSec % 3600) / 60),
+        s: totalSec % 60
+    };
+}
 
+function pad(n) {
+    return String(n).padStart(2, '0');
+}
+
+// ─── Acciones ────────────────────────────────────────────────────────────────
 btnStart.addEventListener('click', async () => {
     try {
-        const { data, error } = await supabase
+        const { data, error } = await sb
             .from('jornadas')
-            .insert([{ usuario_id: currentUser.id }])
+            .insert([{
+                usuario_id: currentUser.id,
+                estado: 'activa',
+                inicio: new Date().toISOString()
+            }])
             .select()
             .single();
 
         if (error) throw error;
+
         currentSession = data;
+        workedMsOnPause = 0;
         updateControls();
         startTimer();
-    } catch (e) {
-        console.error(e);
-        alert('Error al iniciar jornada');
+    } catch (err) {
+        console.error('Error iniciar jornada:', err);
+        alert('No se pudo iniciar la jornada');
     }
 });
 
 btnPause.addEventListener('click', async () => {
     try {
-        // 1. Actualizar estado jornada
-        await supabase
+        const now = new Date().toISOString();
+        const { data, error } = await sb
             .from('jornadas')
-            .update({ 
+            .update({
                 estado: 'pausada',
-                break_inicio: new Date().toISOString()
+                break_inicio: now
             })
             .eq('id', currentSession.id)
-            .select() // Importante para devolver el objeto actualizado
+            .select()
             .single();
-        
+
         if (error) throw error;
-        
-        currentSession = data; // Actualizamos la sesión local con los nuevos datos
+
+        currentSession = data;
+        workedMsOnPause = new Date() - new Date(currentSession.inicio);
         updateControls();
-    } catch (e) {
-        console.error(e);
+        updateTimerDisplay();
+    } catch (err) {
+        console.error('Error pausar:', err);
         alert('Error al pausar');
     }
 });
 
 btnResume.addEventListener('click', async () => {
     try {
-        // Actualizar estado jornada y fin de break
-        const { data, error } = await supabase
+        const now = new Date().toISOString();
+        const { data, error } = await sb
             .from('jornadas')
-            .update({ 
+            .update({
                 estado: 'activa',
-                break_fin: new Date().toISOString()
+                break_fin: now
             })
             .eq('id', currentSession.id)
             .select()
             .single();
-        
+
         if (error) throw error;
 
         currentSession = data;
+        const pausaMs = new Date(now) - new Date(currentSession.break_inicio);
+        workedMsOnPause += pausaMs;
         updateControls();
-    } catch (e) {
-        console.error(e);
+        startTimer();
+    } catch (err) {
+        console.error('Error reanudar:', err);
         alert('Error al reanudar');
     }
 });
 
 btnEnd.addEventListener('click', async () => {
     try {
-        // Si estaba pausado, cerrar la pausa primero (si no se cerró antes)
-         if (currentSession.estado === 'pausada' && !currentSession.break_fin) {
-             await supabase
-            .from('jornadas')
-            .update({ break_fin: new Date().toISOString() })
-            .eq('id', currentSession.id);
+        const updates = {
+            fin: new Date().toISOString(),
+            estado: 'completada'
+        };
+
+        if (currentSession.estado === 'pausada' && !currentSession.break_fin) {
+            updates.break_fin = new Date().toISOString();
         }
 
-        // Finalizar jornada
-        const { error } = await supabase
+        const { error } = await sb
             .from('jornadas')
-            .update({ 
-                fin: new Date().toISOString(),
-                estado: 'completada'
-            })
+            .update(updates)
             .eq('id', currentSession.id);
 
         if (error) throw error;
-        
+
         currentSession = null;
-        currentBreak = null;
-        updateControls();
+        workedMsOnPause = 0;
         stopTimer();
         timerDisplay.textContent = '00:00:00';
-        loadHistory(); // Recargar tabla
-    } catch (e) {
-        console.error(e);
-        alert('Error al finalizar');
+        updateControls();
+        loadHistory();
+    } catch (err) {
+        console.error('Error finalizar:', err);
+        alert('Error al finalizar jornada');
     }
 });
 
-
-// --- Historial ---
+// ─── Historial ───────────────────────────────────────────────────────────────
 async function loadHistory() {
-    const { data: jornadas, error } = await supabase
+    const { data: jornadas, error } = await sb
         .from('jornadas')
-        .select('*') // Ya trae break_inicio y break_fin
+        .select('*')
         .eq('usuario_id', currentUser.id)
         .order('inicio', { ascending: false });
 
     if (error) {
-        console.error(error);
+        console.error('Error historial:', error.message);
         return;
     }
 
@@ -327,41 +367,33 @@ async function loadHistory() {
 
     jornadas.forEach(j => {
         const row = document.createElement('tr');
-        
         const start = new Date(j.inicio);
         const end = j.fin ? new Date(j.fin) : null;
-        
-        // Calcular duración pausa (si hubo)
-        let pauseDuration = 0;
+
+        let pauseMs = 0;
         if (j.break_inicio && j.break_fin) {
-             pauseDuration = new Date(j.break_fin) - new Date(j.break_inicio);
-        } else if (j.break_inicio && !j.break_fin) {
-             // Pausa en curso (opcional: calcular hasta ahora)
-             // Por simplicidad, 0 hasta que termine
+            pauseMs = new Date(j.break_fin) - new Date(j.break_inicio);
         }
 
-        // Calcular total trabajado
         let totalStr = 'En curso...';
         if (end) {
-            const durationMs = (end - start) - pauseDuration;
+            const durationMs = (end - start) - pauseMs;
             const h = Math.floor(durationMs / 3600000);
             const m = Math.floor((durationMs % 3600000) / 60000);
             totalStr = `${h}h ${m}m`;
         }
 
-        // Formato fechas
-        const dateStr = start.toLocaleDateString();
-        const startStr = start.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-        const endStr = end ? end.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : '-';
-        
-        const breakStartStr = j.break_inicio ? new Date(j.break_inicio).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : '-';
-        const breakEndStr = j.break_fin ? new Date(j.break_fin).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : '-';
+        const dateStr    = start.toLocaleDateString();
+        const startStr   = start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        const endStr     = end ? end.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '-';
+        const breakStart = j.break_inicio ? new Date(j.break_inicio).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '-';
+        const breakEnd   = j.break_fin ? new Date(j.break_fin).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '-';
 
         row.innerHTML = `
             <td>${dateStr}</td>
             <td>${startStr}</td>
-            <td>${breakStartStr}</td>
-            <td>${breakEndStr}</td>
+            <td>${breakStart}</td>
+            <td>${breakEnd}</td>
             <td>${endStr}</td>
             <td>${totalStr}</td>
         `;
@@ -369,5 +401,5 @@ async function loadHistory() {
     });
 }
 
-// Iniciar aplicación
+// ─── Arrancar la aplicación ──────────────────────────────────────────────────
 init();
