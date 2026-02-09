@@ -7,6 +7,7 @@ const btnToggleAuth   = document.getElementById('btn-toggle-auth');
 const btnToggleLogin  = document.getElementById('btn-toggle-login');
 const authMessage     = document.getElementById('auth-message');
 const dashboardMessage = document.getElementById('dashboard-message');
+const breakTimerDisplay = document.getElementById('break-timer-display');
 
 const userDisplay     = document.getElementById('user-display');
 const btnLogout       = document.getElementById('btn-logout');
@@ -151,7 +152,12 @@ async function loadCurrentState() {
         if (data.estado === 'activa') {
             startTimer();
         } else {
-            updateTimerDisplay(); // Mostrar tiempo congelado
+            // Si está pausada, también iniciamos el timer para la cuenta regresiva del break
+            if (data.estado === 'pausada') {
+                startTimer();
+            } else {
+                updateTimerDisplay(); // Mostrar tiempo congelado si está finalizada ?? (aunque si está finalizada data.fin no sería null, y loadCurrentState busca fin:null. Así que esto es solo por seguridad)
+            }
         }
         updateControls();
     } else {
@@ -176,14 +182,30 @@ function updateControls() {
         return;
     }
 
-    btnEnd.classList.remove('hidden');
-
+    // Lógica de visibilidad secuencial:
+    // 1. Si no se ha tomado break (currentPauses == 0) -> Mostrar PAUSA, Ocultar FINALIZAR
+    // 2. Si ya se tomó break (currentPauses > 0) -> Mostrar FINALIZAR, Ocultar PAUSA
+    // Excepción: Si está pausada, mostramos REANUDAR.
+    
     if (currentSession.estado === 'activa') {
-        btnPause.classList.remove('hidden');
         statusBadge.textContent = 'Activo';
         statusBadge.style.color = 'var(--success)';
+        breakTimerDisplay.classList.add('hidden');
+
+        if (currentPauses.length === 0) {
+            // Aún no ha tomado break: Obligamos a ver solo el botón de Break
+            btnPause.classList.remove('hidden');
+            btnEnd.classList.add('hidden'); 
+        } else {
+            // Ya tomó break: Obligamos a ver solo el botón de Finalizar
+            btnPause.classList.add('hidden');
+            btnEnd.classList.remove('hidden');
+        }
+
     } else if (currentSession.estado === 'pausada') {
         btnResume.classList.remove('hidden');
+        btnEnd.classList.add('hidden'); // Ocultar finalizar durante el break
+        breakTimerDisplay.classList.remove('hidden');
         statusBadge.textContent = 'En Break';
         statusBadge.style.color = 'var(--warning)';
     }
@@ -233,19 +255,33 @@ function updateTimerDisplay() {
 
     const { h, m, s } = msToHms(workedMs);
     timerDisplay.textContent = `${pad(h)}:${pad(m)}:${pad(s)}`;
-}
 
-function msToHms(ms) {
-    const totalSec = Math.floor(ms / 1000);
-    return {
-        h: Math.floor(totalSec / 3600),
-        m: Math.floor((totalSec % 3600) / 60),
-        s: totalSec % 60
-    };
-}
+    // Lógica del Break Timer
+    if (currentSession.estado === 'pausada') {
+        const currentPause = currentPauses.find(p => !p.fin);
+        if (currentPause) {
+            const pStart = new Date(currentPause.inicio);
+            const elapsedBreak = now - pStart;
+            const requiredDuration = 45 * 60 * 1000; // 45 minutos
+            const remaining = requiredDuration - elapsedBreak;
 
-function pad(n) {
-    return String(n).padStart(2, '0');
+            if (remaining > 0) {
+                // Aún falta tiempo -> Bloquear botón
+                btnResume.disabled = true;
+                const r = msToHms(remaining);
+                breakTimerDisplay.textContent = `Break Obligatorio: ${pad(r.m)}:${pad(r.s)}`;
+                breakTimerDisplay.classList.remove('finished');
+            } else {
+                // Tiempo cumplido -> Habilitar botón
+                btnResume.disabled = false;
+                breakTimerDisplay.textContent = `Break Completado. Puedes volver.`;
+                breakTimerDisplay.classList.add('finished');
+            }
+        }
+    } else {
+        // Si no estamos en pausa, asegurarnos que el botón esté habilitado (para la próxima)
+        btnResume.disabled = false;
+    }
 }
 
 // ─── Acciones ────────────────────────────────────────────────────────────────
@@ -269,7 +305,7 @@ btnStart.addEventListener('click', async () => {
         startTimer();
     } catch (err) {
         console.error('Error iniciar jornada:', err);
-        showDashboardMessage('No se pudo iniciar la jornada', 'error');
+        showDashboardMessage('No se pudo iniciar el turno', 'error');
     }
 });
 
@@ -305,7 +341,7 @@ btnPause.addEventListener('click', async () => {
         updateTimerDisplay(); // Se actualizará una última vez y quedará "congelado" visualmente
     } catch (err) {
         console.error('Error pausar:', err);
-        showDashboardMessage('Error al pausar la jornada', 'error');
+        showDashboardMessage('Error al iniciar el break', 'error');
     }
 });
 
@@ -345,7 +381,7 @@ btnResume.addEventListener('click', async () => {
         startTimer();
     } catch (err) {
         console.error('Error reanudar:', err);
-        showDashboardMessage('Error al reanudar la jornada', 'error');
+        showDashboardMessage('Error al reanudar el turno', 'error');
     }
 });
 
@@ -379,7 +415,7 @@ btnEnd.addEventListener('click', async () => {
         loadHistory();
     } catch (err) {
         console.error('Error finalizar:', err);
-        showDashboardMessage('Error al finalizar jornada', 'error');
+        showDashboardMessage('Error al finalizar el turno', 'error');
     }
 });
 
