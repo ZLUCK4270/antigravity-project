@@ -22,8 +22,8 @@ const historyList     = document.getElementById('history-list');
 // Estado global
 let currentUser      = null;
 let currentSession   = null;
+let currentPauses    = []; // Array de pausas de la sesión actual
 let timerInterval    = null;
-let workedMsOnPause  = 0;   // tiempo trabajado acumulado antes de la pausa actual
 
 // ─── Inicialización ──────────────────────────────────────────────────────────
 async function init() {
@@ -126,9 +126,13 @@ btnLogout.addEventListener('click', async () => {
 async function loadCurrentState() {
     if (!currentUser) return;
 
+    // Cargamos la jornada activa (sin fecha de fin) y sus pausas
     const { data, error } = await sb
         .from('jornadas')
-        .select('*')
+        .select(`
+            *,
+            pausas (*)
+        `)
         .eq('usuario_id', currentUser.id)
         .is('fin', null)
         .maybeSingle();
@@ -140,28 +144,18 @@ async function loadCurrentState() {
 
     if (data) {
         currentSession = data;
-        const now = new Date();
-
+        currentPauses = data.pausas || [];
+        
+        // Calcular tiempo si ya está corriendo
         if (data.estado === 'activa') {
-            let ms = now - new Date(data.inicio);
-            if (data.break_inicio && data.break_fin) {
-                ms -= (new Date(data.break_fin) - new Date(data.break_inicio));
-            }
-            workedMsOnPause = ms;
             startTimer();
-        } else if (data.estado === 'pausada') {
-            let ms = new Date(data.break_inicio) - new Date(data.inicio);
-            if (data.break_fin) {
-                ms += (new Date(data.break_fin) - new Date(data.break_inicio));
-            }
-            workedMsOnPause = ms;
-            updateTimerDisplay();
+        } else {
+            updateTimerDisplay(); // Mostrar tiempo congelado
         }
-
         updateControls();
     } else {
         currentSession = null;
-        workedMsOnPause = 0;
+        currentPauses = [];
         stopTimer();
         timerDisplay.textContent = '00:00:00';
         updateControls();
@@ -198,7 +192,7 @@ function updateControls() {
 function startTimer() {
     stopTimer();
     timerInterval = setInterval(updateTimerDisplay, 1000);
-    updateTimerDisplay(); // actualización inmediata
+    updateTimerDisplay();
 }
 
 function stopTimer() {
@@ -215,19 +209,28 @@ function updateTimerDisplay() {
     }
 
     const now = new Date();
-    let ms = workedMsOnPause;
+    const start = new Date(currentSession.inicio);
+    
+    // Calcular tiempo total transcurrido desde inicio
+    let totalElapsed = now - start;
 
-    if (currentSession.estado === 'activa') {
-        if (currentSession.break_inicio && !currentSession.break_fin) {
-            // pausa en curso → no contamos más
-        } else {
-            const lastStart = currentSession.break_fin || currentSession.inicio;
-            ms += now - new Date(lastStart);
-        }
-    }
-    // si está pausado → mostramos el valor congelado
+    // Calcular tiempo total de pausas
+    let totalPauseTime = 0;
+    
+    currentPauses.forEach(p => {
+        const pStart = new Date(p.inicio);
+        const pEnd = p.fin ? new Date(p.fin) : now; // Si no ha terminado, cuenta hasta ahora
+        totalPauseTime += (pEnd - pStart);
+    });
 
-    const { h, m, s } = msToHms(ms);
+    // Si la sesión está pausada, el tiempo 'now' sigue avanzando,
+    // pero ese avance se suma a 'totalPauseTime' automáticamente en la línea anterior (p.fin ? ... : now),
+    // por lo que (totalElapsed - totalPauseTime) se mantiene constante.
+    
+    let workedMs = totalElapsed - totalPauseTime;
+    if (workedMs < 0) workedMs = 0; // Seguridad
+
+    const { h, m, s } = msToHms(workedMs);
     timerDisplay.textContent = `${pad(h)}:${pad(m)}:${pad(s)}`;
 }
 
@@ -260,7 +263,7 @@ btnStart.addEventListener('click', async () => {
         if (error) throw error;
 
         currentSession = data;
-        workedMsOnPause = 0;
+        currentPauses = [];
         updateControls();
         startTimer();
     } catch (err) {
@@ -272,22 +275,33 @@ btnStart.addEventListener('click', async () => {
 btnPause.addEventListener('click', async () => {
     try {
         const now = new Date().toISOString();
-        const { data, error } = await sb
+        
+        // 1. Actualizar estado de jornada
+        const { error: errJornada } = await sb
             .from('jornadas')
-            .update({
-                estado: 'pausada',
-                break_inicio: now
-            })
-            .eq('id', currentSession.id)
+            .update({ estado: 'pausada' })
+            .eq('id', currentSession.id);
+        
+        if (errJornada) throw errJornada;
+
+        // 2. Insertar nueva pausa
+        const { data: pauseData, error: errPausa } = await sb
+            .from('pausas')
+            .insert([{
+                jornada_id: currentSession.id,
+                inicio: now
+            }])
             .select()
             .single();
 
-        if (error) throw error;
+        if (errPausa) throw errPausa;
 
-        currentSession = data;
-        workedMsOnPause = new Date() - new Date(currentSession.inicio);
+        // Actualizar estado local
+        currentSession.estado = 'pausada';
+        currentPauses.push(pauseData);
+        
         updateControls();
-        updateTimerDisplay();
+        updateTimerDisplay(); // Se actualizará una última vez y quedará "congelado" visualmente
     } catch (err) {
         console.error('Error pausar:', err);
         alert('Error al pausar');
@@ -297,21 +311,35 @@ btnPause.addEventListener('click', async () => {
 btnResume.addEventListener('click', async () => {
     try {
         const now = new Date().toISOString();
-        const { data, error } = await sb
+
+        // 1. Actualizar estado de jornada
+        const { error: errJornada } = await sb
             .from('jornadas')
-            .update({
-                estado: 'activa',
-                break_fin: now
-            })
-            .eq('id', currentSession.id)
-            .select()
-            .single();
+            .update({ estado: 'activa' })
+            .eq('id', currentSession.id);
 
-        if (error) throw error;
+        if (errJornada) throw errJornada;
 
-        currentSession = data;
-        const pausaMs = new Date(now) - new Date(currentSession.break_inicio);
-        workedMsOnPause += pausaMs;
+        // 2. Encontrar la pausa abierta y cerrarla
+        // Buscamos en local la pausa que no tiene 'fin'
+        const openPauseIndex = currentPauses.findIndex(p => !p.fin);
+        
+        if (openPauseIndex !== -1) {
+            const pauseId = currentPauses[openPauseIndex].id;
+            const { data: updatedPause, error: errPausa } = await sb
+                .from('pausas')
+                .update({ fin: now })
+                .eq('id', pauseId)
+                .select()
+                .single();
+
+            if (errPausa) throw errPausa;
+            
+            // Actualizar array local
+            currentPauses[openPauseIndex] = updatedPause;
+        }
+
+        currentSession.estado = 'activa';
         updateControls();
         startTimer();
     } catch (err) {
@@ -322,24 +350,28 @@ btnResume.addEventListener('click', async () => {
 
 btnEnd.addEventListener('click', async () => {
     try {
-        const updates = {
-            fin: new Date().toISOString(),
-            estado: 'completada'
-        };
+        const now = new Date().toISOString();
 
-        if (currentSession.estado === 'pausada' && !currentSession.break_fin) {
-            updates.break_fin = new Date().toISOString();
+        // Verificar si hay pausa abierta al cerrar
+        if (currentSession.estado === 'pausada') {
+            const openPause = currentPauses.find(p => !p.fin);
+            if (openPause) {
+                await sb.from('pausas').update({ fin: now }).eq('id', openPause.id);
+            }
         }
 
         const { error } = await sb
             .from('jornadas')
-            .update(updates)
+            .update({
+                fin: now,
+                estado: 'completada'
+            })
             .eq('id', currentSession.id);
 
         if (error) throw error;
 
         currentSession = null;
-        workedMsOnPause = 0;
+        currentPauses = [];
         stopTimer();
         timerDisplay.textContent = '00:00:00';
         updateControls();
@@ -352,9 +384,10 @@ btnEnd.addEventListener('click', async () => {
 
 // ─── Historial ───────────────────────────────────────────────────────────────
 async function loadHistory() {
+    // Traemos jornadas con sus pausas
     const { data: jornadas, error } = await sb
         .from('jornadas')
-        .select('*')
+        .select(`*, pausas (*)`)
         .eq('usuario_id', currentUser.id)
         .order('inicio', { ascending: false });
 
@@ -370,30 +403,60 @@ async function loadHistory() {
         const start = new Date(j.inicio);
         const end = j.fin ? new Date(j.fin) : null;
 
-        let pauseMs = 0;
-        if (j.break_inicio && j.break_fin) {
-            pauseMs = new Date(j.break_fin) - new Date(j.break_inicio);
+        // Calcular total pausas
+        let totalPauseMs = 0;
+        if (j.pausas && j.pausas.length > 0) {
+            j.pausas.forEach(p => {
+                const pStart = new Date(p.inicio);
+                const pEnd = p.fin ? new Date(p.fin) : (end || new Date()); 
+                totalPauseMs += (pEnd - pStart);
+            });
         }
 
         let totalStr = 'En curso...';
         if (end) {
-            const durationMs = (end - start) - pauseMs;
+            let durationMs = (end - start) - totalPauseMs;
+            if(durationMs < 0) durationMs = 0;
+            
             const h = Math.floor(durationMs / 3600000);
             const m = Math.floor((durationMs % 3600000) / 60000);
             totalStr = `${h}h ${m}m`;
         }
 
+        // Formato fechas
         const dateStr    = start.toLocaleDateString();
         const startStr   = start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
         const endStr     = end ? end.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '-';
-        const breakStart = j.break_inicio ? new Date(j.break_inicio).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '-';
-        const breakEnd   = j.break_fin ? new Date(j.break_fin).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '-';
+        
+        // Mostrar resumen de pausas
+        // Si hay muchas pausas, mostramos la cantidad o el total
+        const breaksInfo = j.pausas && j.pausas.length > 0 
+            ? `${j.pausas.length} pausa(s)` 
+            : 'Ninguna';
+
+        // Reemplazamos las columnas de break_inicio/fin (que eran fijas) por info más general
+        // Ojo: index.html tiene headers fijos. Deberíamos adaptar la tabla o llenar con datos representativos.
+        // Para no romper el HTML, pondré la primera pausa en las columnas viejas o guiones.
+        
+        let firstBreakStart = '-';
+        let firstBreakEnd = '-';
+        
+        if (j.pausas && j.pausas.length > 0) {
+            firstBreakStart = new Date(j.pausas[0].inicio).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            firstBreakEnd = j.pausas[0].fin 
+                ? new Date(j.pausas[0].fin).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                : '...';
+            
+            if (j.pausas.length > 1) {
+                firstBreakEnd += ` (+${j.pausas.length - 1})`;
+            }
+        }
 
         row.innerHTML = `
             <td>${dateStr}</td>
             <td>${startStr}</td>
-            <td>${breakStart}</td>
-            <td>${breakEnd}</td>
+            <td>${firstBreakStart}</td>
+            <td>${firstBreakEnd}</td>
             <td>${endStr}</td>
             <td>${totalStr}</td>
         `;
