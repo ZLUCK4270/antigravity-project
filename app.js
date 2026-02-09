@@ -6,6 +6,7 @@ const registerForm    = document.getElementById('register-form');
 const btnToggleAuth   = document.getElementById('btn-toggle-auth');
 const btnToggleLogin  = document.getElementById('btn-toggle-login');
 const authMessage     = document.getElementById('auth-message');
+const dashboardMessage = document.getElementById('dashboard-message');
 
 const userDisplay     = document.getElementById('user-display');
 const btnLogout       = document.getElementById('btn-logout');
@@ -170,7 +171,7 @@ function updateControls() {
 
     if (!currentSession) {
         btnStart.classList.remove('hidden');
-        statusBadge.textContent = 'Inactivo';
+        statusBadge.textContent = 'No Iniciado';
         statusBadge.style.color = 'var(--text-secondary)';
         return;
     }
@@ -179,11 +180,11 @@ function updateControls() {
 
     if (currentSession.estado === 'activa') {
         btnPause.classList.remove('hidden');
-        statusBadge.textContent = 'Trabajando';
+        statusBadge.textContent = 'Activo';
         statusBadge.style.color = 'var(--success)';
     } else if (currentSession.estado === 'pausada') {
         btnResume.classList.remove('hidden');
-        statusBadge.textContent = 'En Pausa';
+        statusBadge.textContent = 'En Break';
         statusBadge.style.color = 'var(--warning)';
     }
 }
@@ -268,7 +269,7 @@ btnStart.addEventListener('click', async () => {
         startTimer();
     } catch (err) {
         console.error('Error iniciar jornada:', err);
-        alert('No se pudo iniciar la jornada');
+        showDashboardMessage('No se pudo iniciar la jornada', 'error');
     }
 });
 
@@ -304,7 +305,7 @@ btnPause.addEventListener('click', async () => {
         updateTimerDisplay(); // Se actualizará una última vez y quedará "congelado" visualmente
     } catch (err) {
         console.error('Error pausar:', err);
-        alert('Error al pausar');
+        showDashboardMessage('Error al pausar la jornada', 'error');
     }
 });
 
@@ -344,7 +345,7 @@ btnResume.addEventListener('click', async () => {
         startTimer();
     } catch (err) {
         console.error('Error reanudar:', err);
-        alert('Error al reanudar');
+        showDashboardMessage('Error al reanudar la jornada', 'error');
     }
 });
 
@@ -378,9 +379,20 @@ btnEnd.addEventListener('click', async () => {
         loadHistory();
     } catch (err) {
         console.error('Error finalizar:', err);
-        alert('Error al finalizar jornada');
+        showDashboardMessage('Error al finalizar jornada', 'error');
     }
 });
+
+// ─── UI Helpers ──────────────────────────────────────────────────────────────
+function showDashboardMessage(msg, type = 'info') {
+    dashboardMessage.textContent = msg;
+    dashboardMessage.style.color = type === 'error' ? 'var(--danger)' : 'var(--success)';
+    
+    // Auto-ocultar después de 3 segundos
+    setTimeout(() => {
+        dashboardMessage.textContent = '';
+    }, 3000);
+}
 
 // ─── Historial ───────────────────────────────────────────────────────────────
 async function loadHistory() {
